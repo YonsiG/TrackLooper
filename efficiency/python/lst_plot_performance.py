@@ -624,6 +624,7 @@ def draw_plot(effs, nums, dens, params):
         for i, other in enumerate(others):
             other.Draw("ep")
             other.GetYaxis().SetTitle("{} / {}".format(legend_labels[i+1], legend_labels[0]))
+            other.GetYaxis().SetRangeUser(0.5, 1.5)
             other.SetMarkerStyle(markerstyles[i+1])
             other.SetMarkerSize(markersize)
             other.SetMarkerColor(colors[i+1])

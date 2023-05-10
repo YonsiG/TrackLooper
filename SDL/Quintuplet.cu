@@ -375,6 +375,7 @@ __device__ bool SDL::runQuintupletDefaultAlgo(struct SDL::modules& modulesInGPU,
     outerRadius = computeRadiusFromThreeAnchorHits(x3, y3, x4, y4, x5, y5, g, f);
     bridgeRadius = computeRadiusFromThreeAnchorHits(x2, y2, x3, y3, x4, y4, g, f);
     innerRadius = computeRadiusFromThreeAnchorHits(x1, y1, x2, y2, x3, y3, g, f);
+//    printf("innerRadius:%f, bridgeRadius:%f, outerRadius:%f\n", innerRadius, bridgeRadius, outerRadius);
 
     float inner_pt = 2 * k2Rinv1GeVf * innerRadius;
     pass = pass and passT5RZConstraint(modulesInGPU, mdsInGPU, firstMDIndex, secondMDIndex, thirdMDIndex, fourthMDIndex, fifthMDIndex, lowerModuleIndex1, lowerModuleIndex2, lowerModuleIndex3, lowerModuleIndex4, lowerModuleIndex5, rzChiSquared, inner_pt, innerRadius, g, f, TightCutFlag);
@@ -441,7 +442,8 @@ __device__ bool SDL::runQuintupletDefaultAlgo(struct SDL::modules& modulesInGPU,
     //extra chi squared cuts!
     if(regressionRadius < 5.0f/(2.f * k2Rinv1GeVf))
     {
-        pass = pass and passChiSquaredConstraint(modulesInGPU, lowerModuleIndex1, lowerModuleIndex2, lowerModuleIndex3, lowerModuleIndex4, lowerModuleIndex5, chiSquared);
+//        printf("xVec:%f",xVec[3]);
+        pass = pass and passChiSquaredConstraint(xVec, yVec, modulesInGPU, lowerModuleIndex1, lowerModuleIndex2, lowerModuleIndex3, lowerModuleIndex4, lowerModuleIndex5, chiSquared, g, f, innerRadius);
         if(not pass) return pass;
     }
 
@@ -457,7 +459,7 @@ __device__ bool SDL::runQuintupletDefaultAlgo(struct SDL::modules& modulesInGPU,
 }
 
 //90% constraint
-__device__ bool SDL::passChiSquaredConstraint(struct SDL::modules& modulesInGPU, uint16_t& lowerModuleIndex1, uint16_t& lowerModuleIndex2, uint16_t& lowerModuleIndex3, uint16_t& lowerModuleIndex4, uint16_t& lowerModuleIndex5, float& chiSquared)
+__device__ bool SDL::passChiSquaredConstraint(float* xs, float* ys, struct SDL::modules& modulesInGPU, uint16_t& lowerModuleIndex1, uint16_t& lowerModuleIndex2, uint16_t& lowerModuleIndex3, uint16_t& lowerModuleIndex4, uint16_t& lowerModuleIndex5, float& chiSquared, float g, float f, float innerRadius)
 {
     //following Philip's layer number prescription
     const int layer1 = modulesInGPU.layers[lowerModuleIndex1] + 6 * (modulesInGPU.subdets[lowerModuleIndex1] == SDL::Endcap) + 5 * (modulesInGPU.subdets[lowerModuleIndex1] == SDL::Endcap and modulesInGPU.moduleType[lowerModuleIndex1] == SDL::TwoS);
@@ -466,7 +468,99 @@ __device__ bool SDL::passChiSquaredConstraint(struct SDL::modules& modulesInGPU,
     const int layer4 = modulesInGPU.layers[lowerModuleIndex4] + 6 * (modulesInGPU.subdets[lowerModuleIndex4] == SDL::Endcap) + 5 * (modulesInGPU.subdets[lowerModuleIndex4] == SDL::Endcap and modulesInGPU.moduleType[lowerModuleIndex4] == SDL::TwoS);
     const int layer5 = modulesInGPU.layers[lowerModuleIndex5] + 6 * (modulesInGPU.subdets[lowerModuleIndex5] == SDL::Endcap) + 5 * (modulesInGPU.subdets[lowerModuleIndex5] == SDL::Endcap and modulesInGPU.moduleType[lowerModuleIndex5] == SDL::TwoS);
 
-    if(layer1 == 7 and layer2 == 8 and layer3 == 9)
+    float x_center = g*10; //g in units of cm, x_center in units of mm
+    float y_center = f*10; //g in units of cm, x_center in units of mm
+    float E = -2*x_center, F=-2*y_center;
+    float Rt = innerRadius*10;
+    float G = x_center*x_center + y_center*y_center - Rt*Rt;
+
+    float chi2=0;
+    float x,y,f_xy,f_xy_unc;
+    bool is2S;
+    float drdz, slope;
+    short side, subdets;
+    for (int iloop=3; iloop<5; iloop++)
+    {
+        //function f(x,y)
+        x = xs[iloop]*10.0;
+        y = ys[iloop]*10.0;
+        f_xy = x*x+y*y+E*x+F*y+G;
+
+        //uncertainty of f(x,y)
+        if (iloop==3) 
+        {
+            is2S = (modulesInGPU.moduleType[lowerModuleIndex4] == SDL::TwoS);
+            drdz = abs(modulesInGPU.drdzs[lowerModuleIndex4]);
+            slope = modulesInGPU.slopes[lowerModuleIndex4];
+            subdets = modulesInGPU.subdets[lowerModuleIndex4];
+            side = modulesInGPU.sides[lowerModuleIndex4];
+        }
+        if (iloop==4) 
+        {
+            is2S = (modulesInGPU.moduleType[lowerModuleIndex5] == SDL::TwoS);
+            drdz = abs(modulesInGPU.drdzs[lowerModuleIndex5]);
+            slope = modulesInGPU.slopes[lowerModuleIndex5];
+            subdets = modulesInGPU.subdets[lowerModuleIndex5];
+            side = modulesInGPU.sides[lowerModuleIndex5];
+        }
+        float Delta2 = is2S ? 0.09 : 0.1;
+        float Delta3 = is2S ? 50 : 1.5;
+        float DELTA3 = Delta3 * 1/sqrt(1+drdz*drdz);
+        float phi = atan(y/x);
+        float cos_phi = cos(phi);
+        float sin_phi = sin(phi);
+//        float cos_phi = slope/sqrt(1+slope*slope);
+//        float sin_phi = 1/sqrt(1+slope*slope);
+
+        //deciding the covariance matrix sign, using module angle is a bit different with the hit x,y position
+        if (x>0, y>0)
+        {
+            cos_phi = abs(cos_phi);
+            sin_phi = abs(sin_phi);
+        }
+        else if (x>0, y<0)
+        {
+            cos_phi = abs(cos_phi);
+            sin_phi = -abs(sin_phi);
+        }
+        else if (x<0, y>0)
+        {
+            cos_phi = -abs(cos_phi);
+            sin_phi = abs(sin_phi);
+        }
+        else if (x<0, y<0)
+        {
+            cos_phi = -abs(cos_phi);
+            sin_phi = -abs(sin_phi);
+        }
+
+        float cov_xx, cov_yy, cov_xy;
+        if (subdets == SDL::Barrel && side == SDL::Center)
+        {
+            cov_xx = Delta2*Delta2*sin_phi*sin_phi;
+            cov_yy = Delta2*Delta2*cos_phi*cos_phi;
+            cov_xy = -Delta2*Delta2*cos_phi*sin_phi;
+        }
+        else if (subdets == SDL::Endcap)
+        {
+            cov_xx = Delta2*Delta2*sin_phi*sin_phi + Delta3*Delta3*cos_phi*cos_phi;
+            cov_yy = Delta2*Delta2*cos_phi*cos_phi + Delta3*Delta3*sin_phi*sin_phi;
+            cov_xy = cos_phi*sin_phi*(Delta3*Delta3-Delta2*Delta2);
+        }
+        else if (subdets == SDL::Barrel && side != SDL::Center)
+        {
+            cov_xx = Delta2*Delta2*sin_phi*sin_phi + DELTA3*DELTA3*cos_phi*cos_phi;
+            cov_yy = Delta2*Delta2*cos_phi*cos_phi + DELTA3*DELTA3*sin_phi*sin_phi;
+            cov_xy = cos_phi*sin_phi*(DELTA3*DELTA3-Delta2*Delta2);
+        }
+
+        f_xy_unc = sqrt((2*x+E)*(2*x+E)*cov_xx + (2*y+F)*(2*y+F)*cov_yy + (2*x+E)*(2*y+F)*cov_xy);
+        chi2+=(f_xy/f_xy_unc)*(f_xy/f_xy_unc);
+
+    }
+
+    chiSquared = chi2;
+/*    if(layer1 == 7 and layer2 == 8 and layer3 == 9)
     {
         if(layer4 == 10 and layer5 == 11)
         {
@@ -582,7 +676,7 @@ __device__ bool SDL::passChiSquaredConstraint(struct SDL::modules& modulesInGPU,
     {
         return chiSquared < 0.09461f;
     }
-
+*/
     return true;
 }
 
